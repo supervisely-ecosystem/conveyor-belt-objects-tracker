@@ -1,0 +1,8 @@
+# supervisely
+# git+https://github.com/supervisely/supervisely.git@conveyor-belt
+# git+https://github.com/cvg/LightGlue.git@main
+git+https://github.com/grokhi/LightGlue.git@load-with-url
+scikit-learn
+# setuptools==69.5.1
+# code formatter
+# black

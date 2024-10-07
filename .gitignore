@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.DS_Store
+APP_DATA/
+supervisely
+dataset_tools/
+dataset-tools
+lightglue
