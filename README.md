@@ -9,11 +9,11 @@
   <a href="#How-To-Run">How To Run</a>
 </p>
 
-[![](https://img.shields.io/badge/supervisely-ecosystem-brightgreen)](https://ecosystem.supervise.ly/apps/supervisely-ecosystem/conveyor-belt-objects-tracker)
-[![](https://img.shields.io/badge/slack-chat-green.svg?logo=slack)](https://supervise.ly/slack)
+[![](https://img.shields.io/badge/supervisely-ecosystem-brightgreen)](https://ecosystem.supervisely.com/apps/supervisely-ecosystem/conveyor-belt-objects-tracker)
+[![](https://img.shields.io/badge/slack-chat-green.svg?logo=slack)](https://supervisely.com/slack)
 ![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/supervisely-ecosystem/conveyor-belt-objects-tracker)
-[![views](https://app.supervise.ly/img/badges/views/supervisely-ecosystem/conveyor-belt-objects-tracker.png)](https://supervise.ly)
-[![runs](https://app.supervise.ly/img/badges/runs/supervisely-ecosystem/conveyor-belt-objects-tracker.png)](https://supervise.ly)
+[![views](https://app.supervisely.com/img/badges/views/supervisely-ecosystem/conveyor-belt-objects-tracker.png)](https://supervisely.com)
+[![runs](https://app.supervisely.com/img/badges/runs/supervisely-ecosystem/conveyor-belt-objects-tracker.png)](https://supervisely.com)
 
 </div>
 
@@ -29,7 +29,7 @@ The application employs algorithms specifically designed for scenes where there 
 
 The interpolation algorithm is fine-tuned for low frame rate data (e.g. 10-15 fps) where smoothness needs to be improved without introducing artefacts or distortions. The application uses temporal interpolation methods to generate additional frames, simulating a higher frame rate without increasing the original data volume.
 
-For high frame rate data, we recommend using more advanced models, such as [MixFormer object tracking (CVPR2022)](https://ecosystem.supervise.ly/apps/supervisely-ecosystem/mix-former/serve/serve), which offer precise motion restoration and perform better in dynamic scenes.
+For high frame rate data, we recommend using more advanced models, such as [MixFormer object tracking (CVPR2022)](https://ecosystem.supervisely.com/apps/supervisely-ecosystem/mix-former/serve/serve), which offer precise motion restoration and perform better in dynamic scenes.
 
 <img data-key="sly-module-link" data-module-slug="supervisely-ecosystem/mixformer/serve/serve" src="https://github.com/supervisely-ecosystem/MixFormer/assets/119248312/e74e2bd9-f915-48b1-bb97-ee808326dff5" width="500px" style='padding-bottom: 20px'/>
 
