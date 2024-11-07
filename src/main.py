@@ -807,7 +807,7 @@ def manual_track():
 
 
 @sly.timeit
-def lightglue(image0, image1, max_num_keypoints=1024, device="cpu"):
+def lightglue(image0, image1, max_num_keypoints=2048, device="cpu"):
 
     extractor = (
         SuperPoint(max_num_keypoints=max_num_keypoints, model_dir=g.MODEL_DIR).eval().to(device)
@@ -815,8 +815,8 @@ def lightglue(image0, image1, max_num_keypoints=1024, device="cpu"):
     matcher = (
         LightGlue(
             features="superpoint",
-            depth_confidence=0.9,
-            width_confidence=0.95,
+            depth_confidence=0.8,
+            width_confidence=0.8,
             filter_threshold=0.1,
             # n_layers=3,
             model_dir=g.MODEL_DIR,
@@ -825,8 +825,8 @@ def lightglue(image0, image1, max_num_keypoints=1024, device="cpu"):
         .to(device)
     )
 
-    feats0 = extractor.extract(image0.to(device), resize=256)
-    feats1 = extractor.extract(image1.to(device), resize=256)
+    feats0 = extractor.extract(image0.to(device), resize=512)
+    feats1 = extractor.extract(image1.to(device), resize=512)
 
     matches01 = matcher({"image0": feats0, "image1": feats1})
     feats0, feats1, matches01 = [
