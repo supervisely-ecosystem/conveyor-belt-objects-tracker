@@ -817,7 +817,7 @@ def lightglue(image0, image1, max_num_keypoints=1024, device="cpu"):
             features="superpoint",
             depth_confidence=0.9,
             width_confidence=0.95,
-            filter_threshold=0.9,
+            filter_threshold=0.1,
             # n_layers=3,
             model_dir=g.MODEL_DIR,
         )
