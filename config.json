@@ -1,7 +1,7 @@
 {
   "type": "app",
   "version": "2.0.0",
-  "name": "Conveyor Belt Auto Tracking",
+  "name": "Conveyor Belt Auto Tracking v2.1",
   "description": "Effortlessly track and interpolate labeled objects on a conveyor belt in real-time",
   "categories": ["images", "videos"],
   "icon": "https://github.com/supervisely-ecosystem/conveyor-belt-objects-tracker/releases/download/v0.0.1/icon-conveyor.png",
