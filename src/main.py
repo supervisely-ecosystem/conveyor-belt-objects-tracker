@@ -66,8 +66,8 @@ def get_image_infos(
     image_ids = [x.id for x in image_infos]
 
     event_img_idx = image_ids.index(image_id)
-    start_idx = max(0, event_img_idx - 2 + margins_shift)
-    end_idx = min(event_img_idx + 3 - margins_shift, len(image_infos))
+    start_idx = max(0, event_img_idx - 3 + margins_shift)
+    end_idx = min(event_img_idx + 4 - margins_shift, len(image_infos))
 
     image_ids = image_ids[start_idx:end_idx]
     event_img_idx = image_ids.index(image_id)
