@@ -12,5 +12,5 @@
   "port": 8000,
   "integrated_into": ["image_annotation_tool", "video_annotation_tool"],
   "min_instance_version": "6.11.16",
-  "docker_image": "supervisely/conveyor-belt-interpolator:1.1.0"
+  "docker_image": "supervisely/conveyor-belt-interpolator:1.1.1"
 }

@@ -34,7 +34,7 @@ layout = Container(
     ]
 )
 button_track.disable()
-app = sly.Application(layout=layout)
+app = sly.Application(layout=layout, show_header=False)
 
 # Enabling advanced debug mode.
 if sly.is_development():
