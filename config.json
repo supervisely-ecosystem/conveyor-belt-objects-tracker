@@ -11,6 +11,6 @@
   "entrypoint": "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000",
   "port": 8000,
   "integrated_into": ["image_annotation_tool", "video_annotation_tool"],
-  "min_instance_version": "6.11.16",
+  "min_instance_version": "6.11.44",
   "docker_image": "supervisely/conveyor-belt-interpolator:1.1.1"
 }
