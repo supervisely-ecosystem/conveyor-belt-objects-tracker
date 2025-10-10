@@ -29,7 +29,7 @@ The application employs algorithms specifically designed for scenes where there 
 
 The interpolation algorithm is fine-tuned for low frame rate data (e.g. 10-15 fps) where smoothness needs to be improved without introducing artefacts or distortions. The application uses temporal interpolation methods to generate additional frames, simulating a higher frame rate without increasing the original data volume.
 
-For high frame rate data, we recommend using more advanced models, such as [MixFormer object tracking (CVPR2022)](../../../../supervisely-ecosystem/mix-former/serve/serve), which offer precise motion restoration and perform better in dynamic scenes.
+For high frame rate data, we recommend using more advanced models, such as [MixFormer object tracking (CVPR2022)](../../../../../../supervisely-ecosystem/mix-former/serve/serve), which offer precise motion restoration and perform better in dynamic scenes.
 
 <img data-key="sly-module-link" data-module-slug="supervisely-ecosystem/mixformer/serve/serve" src="https://github.com/supervisely-ecosystem/MixFormer/assets/119248312/e74e2bd9-f915-48b1-bb97-ee808326dff5" width="500px" style='padding-bottom: 20px'/>
 
