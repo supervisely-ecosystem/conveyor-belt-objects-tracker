@@ -1,4 +1,6 @@
 import os
+import threading
+import uuid
 from datetime import datetime
 from typing import *
 
@@ -11,7 +13,7 @@ import src.globals as g
 import supervisely as sly
 import supervisely.app.development as sly_app_development
 from lightglue import ALIKED, DISK, SIFT, DoGHardNet, LightGlue, SuperPoint, viz2d
-from lightglue.utils import load_image, rbd
+from lightglue.utils import load_image, numpy_image_to_torch, rbd, read_image, resize_image
 from supervisely.api.annotation_api import AnnotationInfo
 from supervisely.api.video.video_api import VideoInfo
 from supervisely.app.widgets import Button, CheckboxField, Container, Field, Text
@@ -50,6 +52,16 @@ matches = {}
 timestamp = None
 
 curr_event_tmp = None  # temporary soultion
+
+MATCH_FAILED = "failed"  # stored as a pair's diff when matching found no usable offset
+MAX_FRAME_SIDE = 512  # frames are matched at resize=256, loading them larger only costs memory
+MIN_CROP_WIDTH = 64  # narrower fallback crops collapse inside SuperPoint's pooling layers
+
+# Matching runs one event at a time: each call holds several frames and model activations,
+# and concurrent frame-change events while scrubbing multiplied that past the memory limit.
+matching_lock = threading.RLock()
+latest_frames = {}  # (user_id, video_id) -> frame of the newest frame-change event
+models = {}
 
 
 @sly.timeit
@@ -178,15 +190,71 @@ def get_points_image(
     return matches.get(image_id)
 
 
+def download_frames(api: sly.Api, video_id: int, frame_indexes: List[int], paths: List[str]):
+    """Download to temporary files and rename them into place, so a frame is never read half-written."""
+    tmp_paths = [f"{path}.{uuid.uuid4().hex}.tmp" for path in paths]
+    try:
+        api.video.frame.download_paths(video_id, frame_indexes, tmp_paths)
+        for tmp_path, path in zip(tmp_paths, paths):
+            os.replace(tmp_path, path)
+    finally:
+        for tmp_path in tmp_paths:
+            sly.fs.silent_remove(tmp_path)
+
+
+def load_frame(path: str, crop: Optional[Tuple[int, int]] = None):
+    """Load a frame as a CHW tensor with its longest side at most MAX_FRAME_SIDE.
+    Returns the tensor, the (x, y) scale applied and the column offset of the crop."""
+    image = read_image(path)
+    x0 = 0
+    if crop is not None:
+        x0, x1 = crop
+        image = image[:, x0:x1]
+    h, w = image.shape[:2]
+    scale = (1.0, 1.0)
+    if max(h, w) > MAX_FRAME_SIDE:
+        image, scale = resize_image(image, MAX_FRAME_SIDE)
+    return numpy_image_to_torch(image), torch.tensor(scale), x0
+
+
+def match_frames(path0: str, path1: str, crop: Optional[Tuple[int, int]] = None):
+    """Match two frames and return the matched keypoints in full-frame pixel coordinates."""
+    image0, scale0, x0 = load_frame(path0, crop)
+    image1, scale1, _ = load_frame(path1, crop)
+    m_kpts0, m_kpts1, _, _, _ = lightglue(image0, image1, max_num_keypoints=512)
+    offset = torch.tensor([x0, 0])
+    m_kpts0 = (m_kpts0 + 0.5) / scale0 - 0.5 + offset
+    m_kpts1 = (m_kpts1 + 0.5) / scale1 - 0.5 + offset
+    return m_kpts0, m_kpts1
+
+
 @sly.timeit
 def get_points_video(
-    api: sly.Api, event: sly.Event.ManualSelected.VideoChanged, frame_id: str
+    api: sly.Api,
+    event: sly.Event.ManualSelected.VideoChanged,
+    frame_id: str,
+    skip_if_stale: bool = False,
 ) -> Optional[Dict[int, dict]]:
 
-    m = matches.get(frame_id)
-    if m is not None and not all(m.get(k, {}).get("diff") is None for k in [-1, 1]):
+    def _is_computed(frame_id):
+        m = matches.get(frame_id)
+        return m is not None and not all(m.get(k, {}).get("diff") is None for k in [-1, 1])
+
+    if _is_computed(frame_id):
         return matches[frame_id]
 
+    with matching_lock:
+        if skip_if_stale and latest_frames.get((event.user_id, event.video_id)) != event.frame:
+            sly.logger.debug("Skipping frame %s: a newer frame was selected", frame_id)
+            return None
+        if _is_computed(frame_id):
+            return matches[frame_id]
+        return _compute_points_video(api, event, frame_id)
+
+
+def _compute_points_video(
+    api: sly.Api, event: sly.Event.ManualSelected.VideoChanged, frame_id: str
+) -> Optional[Dict[int, dict]]:
     video_info = api.video.get_info_by_id(event.video_id)
 
     end_frame = min(event.frame + 2, video_info.frames_count)
@@ -205,58 +273,65 @@ def get_points_video(
     frame_indexes_to_download = [
         int(sly.fs.get_file_name(path).split("_")[1]) for path in paths_to_download
     ]
-    api.video.frame.download_paths(video_info.id, frame_indexes_to_download, paths_to_download)
+    download_frames(api, video_info.id, frame_indexes_to_download, paths_to_download)
 
     def _get_diff(m_kpts0, m_kpts1):
         diffs = m_kpts1 - m_kpts0
         filtered = diffs[diffs[:, 1] > 30]  # filter by y-axis static places
         return filtered.mean(dim=0)
 
-    def _find_static_borders(m_kpts0, m_kpts1, image0_width, image1_width):
+    def _find_static_borders(m_kpts0, m_kpts1, frame_width):
 
         data = torch.cat((m_kpts0, m_kpts1), dim=0).T[0].reshape(-1, 1)
-        data = torch.cat((data, torch.tensor([[0], [image0_width], [image1_width]])), dim=0)
+        data = torch.cat((data, torch.tensor([[0], [frame_width], [frame_width]])), dim=0)
 
         kmeans = KMeans(n_clusters=2, random_state=0).fit(data)
         labels = kmeans.labels_
 
-        # Print the clusters
-        cluster_1 = data[labels == 0]
-        cluster_2 = data[labels == 1]
+        # left and right static areas; the moving belt is between them
+        left, right = sorted([data[labels == 0], data[labels == 1]], key=lambda c: c.min().item())
 
-        return int(cluster_1.max()), int(cluster_2.min())
+        return max(int(left.max()), 0), min(int(right.min()), frame_width)
 
-    pairs = [(load_image(paths[i]), load_image(paths[i + 1])) for i in range(len(paths) - 1)]
     pairs_ids = [(frame_ids[i], frame_ids[i + 1]) for i in range(len(frame_ids) - 1)]
-    for pair_ids, pair in zip(pairs_ids, pairs):
-        image_i, image_j = pair
+    for idx, pair_ids in enumerate(pairs_ids):
         frame_id_i, frame_id_j = pair_ids
         if matches[frame_id_i][1]["diff"] is None:
-            m_kpts0, m_kpts1, kpts0, kpts1, matches01 = lightglue(
-                image_i, image_j, max_num_keypoints=512
-            )
-            diff = _get_diff(m_kpts0, m_kpts1)
-            if any(torch.isnan(diff)):
-                sly.logger.debug(
-                    "lightglue has failed with static points. Cropping images to make frame matching better."
+            diff = None
+            try:
+                m_kpts0, m_kpts1 = match_frames(paths[idx], paths[idx + 1])
+                diff = _get_diff(m_kpts0, m_kpts1)
+                if any(torch.isnan(diff)):
+                    x0, x1 = _find_static_borders(m_kpts0, m_kpts1, video_info.frame_width)
+                    if x1 - x0 < MIN_CROP_WIDTH:
+                        sly.logger.debug(
+                            "lightglue has failed with static points. Moving area (%s-%s) is too narrow to crop.",
+                            x0,
+                            x1,
+                        )
+                    else:
+                        sly.logger.debug(
+                            "lightglue has failed with static points. Cropping frames to make frame matching better."
+                        )
+                        m_kpts0, m_kpts1 = match_frames(paths[idx], paths[idx + 1], crop=(x0, x1))
+                        diff = _get_diff(m_kpts0, m_kpts1)
+            except (RuntimeError, ValueError) as e:
+                sly.logger.warning(
+                    "Frame matching (%s and %s) raised an error: %s", frame_id_i, frame_id_j, e
                 )
-                x0, x1 = _find_static_borders(m_kpts0, m_kpts1, image_i.shape[1], image_j.shape[1])
-                try:
-                    m_kpts0, m_kpts1, kpts0, kpts1, matches01 = lightglue(
-                        image_i[:, x0:x1, :], image_j[:, x0:x1, :], max_num_keypoints=512
-                    )
-                    diff = _get_diff(m_kpts0, m_kpts1)
-                except ValueError:
-                    pass
+                diff = None
 
-            if any(torch.isnan(diff)):
+            if diff is None or any(torch.isnan(diff)):
                 sly.logger.warning(
                     "Frame matching (%s and %s) has failed. Possibly, the frame images have nothing in common?",
                     frame_id_i,
                     frame_id_j,
                 )
-            matches[frame_id_i][1]["diff"] = diff.type(torch.int).numpy().tolist()
-            matches[frame_id_i][1]["points"] = (m_kpts0, m_kpts1)
+                matches[frame_id_i][1]["diff"] = MATCH_FAILED
+                matches[frame_id_i][1]["points"] = []
+            else:
+                matches[frame_id_i][1]["diff"] = diff.type(torch.int).numpy().tolist()
+                matches[frame_id_i][1]["points"] = (m_kpts0, m_kpts1)
 
     for pair_ids in pairs_ids[::-1]:
         frame_id_j, frame_id_i = pair_ids  # reverse order
@@ -282,7 +357,8 @@ def video_frame_changed(api: sly.Api, event: sly.Event.Entity.FrameChanged):
     status_image_not_initialized.hide()
     frame_id = f"{event.video_id}_{event.frame}"
     sly.logger.debug("Event frame ID=%s", frame_id)
-    get_points_video(api, event, frame_id)
+    latest_frames[(event.user_id, event.video_id)] = event.frame
+    get_points_video(api, event, frame_id, skip_if_stale=True)
 
     if not button_track.is_disabled():
         return
@@ -304,7 +380,8 @@ def video_frame_changed(api: sly.Api, event: sly.Event.ManualSelected.VideoChang
     status_image_not_initialized.hide()
     frame_id = f"{event.video_id}_{event.frame}"
     sly.logger.debug("Event frame ID=%s", frame_id)
-    get_points_video(api, event, frame_id)
+    latest_frames[(event.user_id, event.video_id)] = event.frame
+    get_points_video(api, event, frame_id, skip_if_stale=True)
 
     if not button_track.is_disabled():
         return
@@ -367,18 +444,27 @@ def process_video_rectangle_changed(api: sly.Api, event: sly.Event.Tools.Rectang
 
     new_figures = []
     drow, dcol = 0, 0
+    lost = False
     for idx, frame_index in enumerate(frame_indexes):
 
         if idx == event_frame_idx:
             drow, dcol = 0, 0
+            lost = False
+            continue
+        if lost:
             continue
 
         direction = -1 if idx < event_frame_idx else 1
         frame_id = f"{event.video_id}_{frame_index}"
 
-        _drow, _dcol = get_increment_by_diff(
+        increment = get_increment_by_diff(
             api, event, frame_id, direction, reverse_direction=True, modality="video"
         )
+        if increment is None:
+            # offsets add up from the event frame outwards: frames past a failed match can't be placed
+            lost = True
+            continue
+        _drow, _dcol = increment
 
         drow += _drow * direction
         dcol += _dcol * direction
@@ -544,18 +630,27 @@ def process_video(api: sly.Api, event: sly.Event.FigureCreated):
 
         new_figures = []
         drow, dcol = 0, 0
+        lost = False
         for idx, frame_index in enumerate(frame_indexes):
 
             if idx == event_frame_idx:
                 drow, dcol = 0, 0
+                lost = False
+                continue
+            if lost:
                 continue
 
             direction = -1 if idx < event_frame_idx else 1
             frame_id = f"{event.video_id}_{frame_index}"
 
-            _drow, _dcol = get_increment_by_diff(
+            increment = get_increment_by_diff(
                 api, event, frame_id, direction, reverse_direction=True, modality="video"
             )
+            if increment is None:
+                # offsets add up from the event frame outwards: frames past a failed match can't be placed
+                lost = True
+                continue
+            _drow, _dcol = increment
 
             drow += _drow * direction
             dcol += _dcol * direction
@@ -806,29 +901,38 @@ def manual_track():
     api.annotation.upload_anns(new_image_ids, new_anns)
 
 
+def get_models(max_num_keypoints: int, device: str = "cpu"):
+    key = (max_num_keypoints, device)
+    if key not in models:
+        extractor = (
+            SuperPoint(max_num_keypoints=max_num_keypoints, model_dir=g.MODEL_DIR).eval().to(device)
+        )
+        matcher = (
+            LightGlue(
+                features="superpoint",
+                depth_confidence=0.9,
+                width_confidence=0.95,
+                filter_threshold=0.9,
+                # n_layers=3,
+                model_dir=g.MODEL_DIR,
+            )
+            .eval()
+            .to(device)
+        )
+        models[key] = (extractor, matcher)
+    return models[key]
+
+
 @sly.timeit
 def lightglue(image0, image1, max_num_keypoints=1024, device="cpu"):
 
-    extractor = (
-        SuperPoint(max_num_keypoints=max_num_keypoints, model_dir=g.MODEL_DIR).eval().to(device)
-    )
-    matcher = (
-        LightGlue(
-            features="superpoint",
-            depth_confidence=0.9,
-            width_confidence=0.95,
-            filter_threshold=0.9,
-            # n_layers=3,
-            model_dir=g.MODEL_DIR,
-        )
-        .eval()
-        .to(device)
-    )
+    with matching_lock, torch.no_grad():
+        extractor, matcher = get_models(max_num_keypoints, device)
 
-    feats0 = extractor.extract(image0.to(device), resize=256)
-    feats1 = extractor.extract(image1.to(device), resize=256)
+        feats0 = extractor.extract(image0.to(device), resize=256)
+        feats1 = extractor.extract(image1.to(device), resize=256)
 
-    matches01 = matcher({"image0": feats0, "image1": feats1})
+        matches01 = matcher({"image0": feats0, "image1": feats1})
     feats0, feats1, matches01 = [
         rbd(x) for x in [feats0, feats1, matches01]
     ]  # remove batch dimension
@@ -837,6 +941,9 @@ def lightglue(image0, image1, max_num_keypoints=1024, device="cpu"):
     m_kpts0, m_kpts1 = kpts0[_matches[..., 0]], kpts1[_matches[..., 1]]
 
     return m_kpts0, m_kpts1, kpts0, kpts1, matches01
+
+
+get_models(512)  # load the models at startup, not on every match
 
 
 def interpolate_label(
@@ -905,7 +1012,10 @@ def get_increment_by_diff(
         points = get_points_video(api, event, image_or_frame_id)
     _dir = direction * -1 if reverse_direction else direction
 
-    _dcol, _drow = points[_dir]["diff"]
+    diff = points[_dir]["diff"]
+    if diff == MATCH_FAILED:
+        return None
+    _dcol, _drow = diff
     return _drow, _dcol
 
 
